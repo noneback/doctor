@@ -10,6 +10,10 @@ use cpu_profier_common::StackInfo;
 use log::{debug, info, warn};
 use tokio::signal;
 
+use crate::translator::formater;
+use crate::translator::translate::Translator;
+mod translator;
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     env_logger::init();
@@ -50,7 +54,7 @@ async fn main() -> Result<(), anyhow::Error> {
             perf_event::PerfTypeId::Software,
             perf_event::perf_sw_ids::PERF_COUNT_SW_CPU_CLOCK as u64,
             perf_event::PerfEventScope::AllProcessesOneCpu { cpu },
-            perf_event::SamplePolicy::Frequency(1),
+            perf_event::SamplePolicy::Frequency(10),false
         )?;
     }
 
@@ -62,6 +66,8 @@ async fn main() -> Result<(), anyhow::Error> {
 
     info!("Waiting for Ctrl-C...");
 
+    let mut translator = Translator::new("/".into());
+
     let mut idx = 0;
     loop {
         if stacks.capacity() <= 0 || idx >= 1000 {
@@ -72,7 +78,7 @@ async fn main() -> Result<(), anyhow::Error> {
         match stacks.pop(0) {
             Ok(v) => {
                 let stack: StackInfo = unsafe { *v.as_ptr().cast() };
-                println!("Stack {} : {:#?}", idx, String::from_utf8_lossy(&stack.cmd));
+                println!("Stack {} : {:#?}", idx, formater::format(&mut translator,&stack));
             }
             _ => {
                 info!("Nothing");

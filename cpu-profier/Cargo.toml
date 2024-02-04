@@ -20,6 +20,8 @@ tokio = { version = "1.25", features = [
     "signal",
     "time",
 ] }
+blazesym = "0.2.0-alpha.10"
+procfs = "0.16.0"
 
 [[bin]]
 name = "cpu-profier"
