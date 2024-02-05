@@ -6,8 +6,11 @@ use std::{
 };
 
 use anyhow::{anyhow, Error, Ok};
+use aya::maps::stack_trace::StackTrace;
 use blazesym::symbolize::{Input, Process, Source, Symbolizer};
 use cpu_profier_common::StackInfo;
+
+use super::perf_record::PerfRecord;
 
 pub struct Translator {
     rootfs: PathBuf,
@@ -22,6 +25,10 @@ impl Translator {
             ksyms: None,
             symbolizer: Symbolizer::new(),
         }
+    }
+
+    pub fn translate_single(stack: &StackInfo, trace: &StackTrace) -> Result<PerfRecord, Error> {
+        unimplemented!("not ready")
     }
 
     pub fn translate_ksyms(&mut self, ip: u64) -> Result<String, Error> {
@@ -48,8 +55,8 @@ impl Translator {
         Err(anyhow::anyhow!("translate_ksyms ERROR"))
     }
 
-    pub fn translate_usyms(&self, uframe: &StackInfo, ip: u64) -> Result<String, Error> {
-        let src = Source::Process(Process::new(uframe.tgid.into()));
+    pub fn translate_usyms(&self, ustack: &StackInfo, ip: u64) -> Result<String, Error> {
+        let src = Source::Process(Process::new(ustack.tgid.into()));
 
         let sym = self
             .symbolizer

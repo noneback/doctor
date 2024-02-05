@@ -1,8 +1,6 @@
 #![no_std]
 #![no_main]
 
-use core::{borrow::BorrowMut, ptr::NonNull};
-
 use aya_bpf::{
     bindings::BPF_F_USER_STACK,
     helpers::bpf_get_smp_processor_id,
@@ -12,10 +10,9 @@ use aya_bpf::{
     BpfContext,
 };
 
-use aya_log_ebpf::info;
 use cpu_profier_common::{skip_idle, StackInfo};
 
-const STACK_SIZE: u32 = 10000;
+const STACK_SIZE: u32 = 100000;
 
 #[map(name = "stack_traces")]
 pub static mut STACK_TRACE: StackTrace = StackTrace::with_max_entries(STACK_SIZE, 0);
@@ -58,7 +55,7 @@ unsafe fn try_get_stack_info(ctx: &PerfEventContext) -> StackInfo {
     StackInfo {
         cpu,
         tgid,
-        // pid,
+        pid,
         cmd,
         user_stack_id,
         kernel_stack_id,
@@ -73,25 +70,15 @@ unsafe fn try_profile(ctx: &PerfEventContext) -> Result<u32, u32> {
 
     let stack_info = try_get_stack_info(&ctx);
 
-    // info!(
-    //     ctx,
-    //     "perf event: u stack info pid {} tgid {}  stack[ u {} -> k {} ]",
-    //     stack_info.pid,
-    //     stack_info.tgid,
-    //     stack_info.user_stack_id.unwrap_or(-1),
-    //     stack_info.kernel_stack_id.unwrap_or(-1)
-    // );
-
     match COUNTS.get_ptr_mut(&stack_info) {
         Some(cnt) => {
             *cnt += 1;
-            // info!(ctx, "Found in Counts: {}", *cnt)
         }
         None => {
             COUNTS.insert(&stack_info, &1, 0);
-            // info!(ctx, "Not Found in Counts, insert a new one")
         }
     }
+    
     STACKS.push(&stack_info, 0);
     Ok(0)
 }

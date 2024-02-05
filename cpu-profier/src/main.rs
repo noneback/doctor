@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Error;
-use aya::maps::{Queue, StackTraceMap};
+use aya::maps::{HashMap, Queue, StackTraceMap};
 use aya::programs::{perf_event, PerfEvent};
 use aya::util::online_cpus;
 use aya::{include_bytes_aligned, Bpf};
@@ -10,9 +10,9 @@ use cpu_profier_common::StackInfo;
 use log::{debug, info, warn};
 use tokio::signal;
 
-use crate::translator::formater;
-use crate::translator::translate::Translator;
-mod translator;
+use crate::profiler::formater;
+use crate::profiler::translate::Translator;
+mod profiler;
 
 fn load_ebpf() -> Result<Bpf, Error> {
     // Bump the memlock rlimit. This is needed for older kernels that don't use the
@@ -51,7 +51,7 @@ fn load_ebpf() -> Result<Bpf, Error> {
             perf_event::PerfTypeId::Software,
             perf_event::perf_sw_ids::PERF_COUNT_SW_CPU_CLOCK as u64,
             perf_event::PerfEventScope::AllProcessesOneCpu { cpu },
-            perf_event::SamplePolicy::Frequency(1),
+            perf_event::SamplePolicy::Frequency(100),
             false,
         )?;
     }
@@ -61,12 +61,15 @@ fn load_ebpf() -> Result<Bpf, Error> {
 async fn main() -> Result<(), anyhow::Error> {
     env_logger::init();
     let mut bpf = load_ebpf()?;
-
     const STACK_INFO_SIZE: usize = std::mem::size_of::<StackInfo>();
-    let mut stacks = Queue::<_, [u8; STACK_INFO_SIZE]>::try_from(bpf.take_map("STACKS").unwrap())?;
 
-    let buf_trace = bpf.map("stack_traces").unwrap();
-    let stack_traces = StackTraceMap::try_from(buf_trace).unwrap();
+    let mut stacks = Queue::<_, [u8; STACK_INFO_SIZE]>::try_from(bpf.take_map("STACKS").unwrap())?;
+    let stack_count =
+        HashMap::<_, [u8; STACK_INFO_SIZE], u64>::try_from(bpf.take_map("counts").unwrap())
+            .unwrap();
+    let stack_traces = StackTraceMap::try_from(bpf.map("stack_traces").unwrap()).unwrap();
+
+
 
     info!("Waiting for Ctrl-C...");
     let mut translator = Translator::new("/".into());
@@ -76,18 +79,17 @@ async fn main() -> Result<(), anyhow::Error> {
         if stacks.capacity() <= 0 || idx >= 1000 {
             break;
         }
-
         idx += 1;
         match stacks.pop(0) {
             Ok(v) => {
                 let stack: StackInfo = unsafe { *v.as_ptr().cast() };
+
                 let mut format_str = format!(
                     "{} cpu_{} {}",
                     stack.tgid,
                     stack.cpu,
                     String::from_utf8_lossy(&stack.cmd).trim_matches('\0')
                 );
-                // format_str.push_str(&format!(" [k] {} ", stack.kernel_stack_id.unwrap()));
 
                 if let Some(kid) = stack.kernel_stack_id {
                     format_str.push_str(
@@ -106,11 +108,8 @@ async fn main() -> Result<(), anyhow::Error> {
                     );
                 }
                 println!("{}", format_str);
-
-                // println!("Stack {} : {:#?}", idx, formater::format(&mut translator,&stack));
             }
             _ => {
-                info!("Nothing");
                 tokio::time::sleep(Duration::from_millis(1000)).await;
             }
         }
