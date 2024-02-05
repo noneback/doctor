@@ -17,7 +17,7 @@ use cpu_profier_common::{skip_idle, StackInfo};
 
 const STACK_SIZE: u32 = 10000;
 
-#[map(name = "stack_trace")]
+#[map(name = "stack_traces")]
 pub static mut STACK_TRACE: StackTrace = StackTrace::with_max_entries(STACK_SIZE, 0);
 
 #[map]

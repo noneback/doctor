@@ -1,2 +1,3 @@
 [workspace]
 members = ["xtask", "cpu-profier", "cpu-profier-common"]
+resolver = "2"

@@ -2,20 +2,17 @@ use std::{
     collections::BTreeMap,
     fs::File,
     io::{self, BufRead, BufReader},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
-use anyhow::{anyhow, Error};
-use blazesym::{
-    symbolize::{CodeInfo, Symbolizer},
-    Addr,
-};
+use anyhow::{anyhow, Error, Ok};
+use blazesym::symbolize::{Input, Process, Source, Symbolizer};
 use cpu_profier_common::StackInfo;
-use procfs::process::{self, Process};
 
 pub struct Translator {
     rootfs: PathBuf,
     ksyms: Option<BTreeMap<u64, String>>,
+    symbolizer: Symbolizer,
 }
 
 impl Translator {
@@ -23,10 +20,11 @@ impl Translator {
         Self {
             rootfs: rootfs,
             ksyms: None,
+            symbolizer: Symbolizer::new(),
         }
     }
 
-    pub fn translate_ksyms(&mut self, kframe: &StackInfo) -> Result<String, Error> {
+    pub fn translate_ksyms(&mut self, ip: u64) -> Result<String, Error> {
         let reader = BufReader::new(File::open(self.rootfs.join("/proc/kallsyms"))?);
         if self.ksyms.is_none() {
             self.ksyms = Some(BTreeMap::new());
@@ -42,7 +40,7 @@ impl Translator {
 
         if let Some(ksyms) = &self.ksyms {
             return Ok(ksyms
-                .range(..=kframe.kernel_stack_id.unwrap() as u64)
+                .range(..=ip)
                 .next_back()
                 .map(|(_, s)| s.clone())
                 .unwrap());
@@ -50,19 +48,17 @@ impl Translator {
         Err(anyhow::anyhow!("translate_ksyms ERROR"))
     }
 
-    pub fn translate_usyms(&mut self, uframe: &StackInfo) -> Result<String, Error> {
-        Err(anyhow::anyhow!("ERROR"))
+    pub fn translate_usyms(&self, uframe: &StackInfo, ip: u64) -> Result<String, Error> {
+        let src = Source::Process(Process::new(uframe.tgid.into()));
+
+        let sym = self
+            .symbolizer
+            .symbolize_single(&src, Input::AbsAddr(ip))
+            .map_err(|e| anyhow!("symbolizer -> {}", e))?;
+
+        match sym {
+            blazesym::symbolize::Symbolized::Sym(symbol) => Ok(format!("{}", symbol.name)),
+            blazesym::symbolize::Symbolized::Unknown(_) => Ok(format!("unknown_{}", ip)),
+        }
     }
-}
-
-pub fn translate_usyms(uframe: &StackInfo) -> Result<String,Error> {
-    // get mappings
-    let p = process::Process::new(uframe.tgid as i32)?;
-
-    let mappings=p.maps()?;
-
-    
-    
-
-    Err(anyhow::anyhow!("translate_usyms ERROR"))
 }

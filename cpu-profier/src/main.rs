@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use anyhow::anyhow;
-use aya::maps::Queue;
+use anyhow::Error;
+use aya::maps::{Queue, StackTraceMap};
 use aya::programs::{perf_event, PerfEvent};
 use aya::util::online_cpus;
 use aya::{include_bytes_aligned, Bpf};
@@ -14,10 +14,7 @@ use crate::translator::formater;
 use crate::translator::translate::Translator;
 mod translator;
 
-#[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {
-    env_logger::init();
-
+fn load_ebpf() -> Result<Bpf, Error> {
     // Bump the memlock rlimit. This is needed for older kernels that don't use the
     // new memcg based accounting, see https://lwn.net/Articles/837122/
     let rlim = libc::rlimit {
@@ -54,18 +51,24 @@ async fn main() -> Result<(), anyhow::Error> {
             perf_event::PerfTypeId::Software,
             perf_event::perf_sw_ids::PERF_COUNT_SW_CPU_CLOCK as u64,
             perf_event::PerfEventScope::AllProcessesOneCpu { cpu },
-            perf_event::SamplePolicy::Frequency(10),false
+            perf_event::SamplePolicy::Frequency(1),
+            false,
         )?;
     }
+    Ok(bpf)
+}
+#[tokio::main]
+async fn main() -> Result<(), anyhow::Error> {
+    env_logger::init();
+    let mut bpf = load_ebpf()?;
 
     const STACK_INFO_SIZE: usize = std::mem::size_of::<StackInfo>();
-    info!("size: {}", STACK_INFO_SIZE);
-    let buf_stacks = bpf.map_mut("STACKS").ok_or_else(|| anyhow!("error"))?;
+    let mut stacks = Queue::<_, [u8; STACK_INFO_SIZE]>::try_from(bpf.take_map("STACKS").unwrap())?;
 
-    let mut stacks = Queue::<_, [u8; STACK_INFO_SIZE]>::try_from(buf_stacks)?;
+    let buf_trace = bpf.map("stack_traces").unwrap();
+    let stack_traces = StackTraceMap::try_from(buf_trace).unwrap();
 
     info!("Waiting for Ctrl-C...");
-
     let mut translator = Translator::new("/".into());
 
     let mut idx = 0;
@@ -78,7 +81,33 @@ async fn main() -> Result<(), anyhow::Error> {
         match stacks.pop(0) {
             Ok(v) => {
                 let stack: StackInfo = unsafe { *v.as_ptr().cast() };
-                println!("Stack {} : {:#?}", idx, formater::format(&mut translator,&stack));
+                let mut format_str = format!(
+                    "{} cpu_{} {}",
+                    stack.tgid,
+                    stack.cpu,
+                    String::from_utf8_lossy(&stack.cmd).trim_matches('\0')
+                );
+                // format_str.push_str(&format!(" [k] {} ", stack.kernel_stack_id.unwrap()));
+
+                if let Some(kid) = stack.kernel_stack_id {
+                    format_str.push_str(
+                        stack_traces
+                            .get(&(kid as u32), 0)
+                            .map(|trace| formater::format(&mut translator, &stack, &trace, true))?
+                            .as_str(),
+                    );
+                }
+                if let Some(uid) = stack.user_stack_id {
+                    format_str.push_str(
+                        stack_traces
+                            .get(&(uid as u32), 0)
+                            .map(|trace| formater::format(&mut translator, &stack, &trace, false))?
+                            .as_str(),
+                    );
+                }
+                println!("{}", format_str);
+
+                // println!("Stack {} : {:#?}", idx, formater::format(&mut translator,&stack));
             }
             _ => {
                 info!("Nothing");
