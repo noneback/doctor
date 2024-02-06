@@ -1,13 +1,17 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use anyhow::Error;
-use aya::maps::{HashMap, Queue, StackTraceMap};
+use aya::maps::{HashMap, MapData, Queue, StackTraceMap};
 use aya::programs::{perf_event, PerfEvent};
 use aya::util::online_cpus;
 use aya::{include_bytes_aligned, Bpf};
 use aya_log::BpfLogger;
 use cpu_profier_common::StackInfo;
 use log::{debug, info, warn};
+use profiler::perf_record::PerfRecord;
+use profiler::translate;
 use tokio::signal;
 
 use crate::profiler::formater;
@@ -51,7 +55,7 @@ fn load_ebpf() -> Result<Bpf, Error> {
             perf_event::PerfTypeId::Software,
             perf_event::perf_sw_ids::PERF_COUNT_SW_CPU_CLOCK as u64,
             perf_event::PerfEventScope::AllProcessesOneCpu { cpu },
-            perf_event::SamplePolicy::Frequency(100),
+            perf_event::SamplePolicy::Frequency(1000),
             false,
         )?;
     }
@@ -69,55 +73,55 @@ async fn main() -> Result<(), anyhow::Error> {
             .unwrap();
     let stack_traces = StackTraceMap::try_from(bpf.map("stack_traces").unwrap()).unwrap();
 
-
-
     info!("Waiting for Ctrl-C...");
-    let mut translator = Translator::new("/".into());
+    let running = Arc::new(AtomicBool::new(true));
 
-    let mut idx = 0;
-    loop {
-        if stacks.capacity() <= 0 || idx >= 1000 {
-            break;
-        }
-        idx += 1;
+    let running_clone = Arc::clone(&running);
+    let handle = tokio::spawn(async move {
+        signal::ctrl_c().await;
+        running.store(false, Ordering::SeqCst);
+    });
+
+    let mut translator = Translator::new("/".into());
+    while running_clone.load(Ordering::SeqCst) {
         match stacks.pop(0) {
             Ok(v) => {
                 let stack: StackInfo = unsafe { *v.as_ptr().cast() };
 
-                let mut format_str = format!(
-                    "{} cpu_{} {}",
-                    stack.tgid,
-                    stack.cpu,
-                    String::from_utf8_lossy(&stack.cmd).trim_matches('\0')
-                );
-
-                if let Some(kid) = stack.kernel_stack_id {
-                    format_str.push_str(
-                        stack_traces
-                            .get(&(kid as u32), 0)
-                            .map(|trace| formater::format(&mut translator, &stack, &trace, true))?
-                            .as_str(),
-                    );
-                }
-                if let Some(uid) = stack.user_stack_id {
-                    format_str.push_str(
-                        stack_traces
-                            .get(&(uid as u32), 0)
-                            .map(|trace| formater::format(&mut translator, &stack, &trace, false))?
-                            .as_str(),
-                    );
-                }
-                println!("{}", format_str);
+                let record = deconstruct_stack(&stack, &stack_traces, &mut translator).unwrap();
+                println!("{}", record);
             }
             _ => {
+                info!("Nothing");
                 tokio::time::sleep(Duration::from_millis(1000)).await;
             }
         }
     }
-    signal::ctrl_c().await?;
-    info!("stacks : {}", stacks.capacity());
 
     info!("Exiting... ");
-
+    handle.await?;
     Ok(())
+}
+
+fn deconstruct_stack(
+    stack: &StackInfo,
+    stack_traces: &StackTraceMap<&MapData>,
+    translator: &mut Translator,
+) -> Result<PerfRecord, Error> {
+    let mut kframes = None;
+    let mut uframes = None;
+
+    if let Some(id) = stack.kernel_stack_id {
+        kframes = stack_traces
+            .get(&(id as u32), 0)
+            .map(|trace| translator.translate_ktrace(&trace).ok())?;
+    }
+
+    if let Some(id) = stack.user_stack_id {
+        uframes = stack_traces
+            .get(&(id as u32), 0)
+            .map(|trace| translator.translate_utrace(stack.pid, &trace).ok())?;
+    }
+
+    Ok(PerfRecord::from(stack, kframes, uframes))
 }

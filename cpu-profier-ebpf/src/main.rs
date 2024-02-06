@@ -62,6 +62,14 @@ unsafe fn try_get_stack_info(ctx: &PerfEventContext) -> StackInfo {
     }
 }
 
+fn kernel_idel_stack(stack: &StackInfo) -> bool {
+    if stack.pid == 0 && stack.cmd.starts_with("swapper".as_bytes()) {
+        true
+    } else {
+        false
+    }
+}
+
 unsafe fn try_profile(ctx: &PerfEventContext) -> Result<u32, u32> {
     if skip_idle() && ctx.pid() == 0 {
         // not profiling idle
@@ -69,6 +77,9 @@ unsafe fn try_profile(ctx: &PerfEventContext) -> Result<u32, u32> {
     }
 
     let stack_info = try_get_stack_info(&ctx);
+    if kernel_idel_stack(&stack_info) {
+        return Ok(0);
+    }
 
     match COUNTS.get_ptr_mut(&stack_info) {
         Some(cnt) => {
