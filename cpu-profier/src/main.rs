@@ -1,3 +1,4 @@
+use clap::{Arg, Parser};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
@@ -9,6 +10,7 @@ use aya::util::online_cpus;
 use aya::{include_bytes_aligned, Bpf};
 use aya_log::BpfLogger;
 use cpu_profier_common::StackInfo;
+use libc::uint8_t;
 use log::{debug, info, warn};
 use profiler::perf_record::PerfRecord;
 use profiler::translate;
@@ -18,7 +20,21 @@ use crate::profiler::formater;
 use crate::profiler::translate::Translator;
 mod profiler;
 
-fn load_ebpf() -> Result<Bpf, Error> {
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+
+struct ProfileOptions {
+    #[arg(short, long)]
+    pid: Option<u32>,
+    #[arg(short, long, default_value = "5")]
+    duration: u32,
+    #[arg(short, long)]
+    frequency: Option<u32>,
+    #[arg(long)]
+    debug: Option<bool>,
+}
+
+fn load_ebpf(opts: ProfileOptions) -> Result<Bpf, Error> {
     // Bump the memlock rlimit. This is needed for older kernels that don't use the
     // new memcg based accounting, see https://lwn.net/Articles/837122/
     let rlim = libc::rlimit {
@@ -50,21 +66,36 @@ fn load_ebpf() -> Result<Bpf, Error> {
     // on clock ticks.
     let program: &mut PerfEvent = bpf.program_mut("cpu_profier").unwrap().try_into()?;
     program.load()?;
-    for cpu in online_cpus()? {
+
+    if let Some(pid) = opts.pid {
         program.attach(
             perf_event::PerfTypeId::Software,
             perf_event::perf_sw_ids::PERF_COUNT_SW_CPU_CLOCK as u64,
-            perf_event::PerfEventScope::AllProcessesOneCpu { cpu },
+            perf_event::PerfEventScope::OneProcessAnyCpu { pid: pid },
             perf_event::SamplePolicy::Frequency(1000),
             false,
         )?;
+    } else {
+        // attach to all
+        for cpu in online_cpus()? {
+            program.attach(
+                perf_event::PerfTypeId::Software,
+                perf_event::perf_sw_ids::PERF_COUNT_SW_CPU_CLOCK as u64,
+                perf_event::PerfEventScope::AllProcessesOneCpu { cpu }, // where put options
+                perf_event::SamplePolicy::Frequency(1000),
+                false,
+            )?;
+        }
     }
     Ok(bpf)
 }
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     env_logger::init();
-    let mut bpf = load_ebpf()?;
+    // read cmdline opt
+    let opts = ProfileOptions::parse();
+
+    let mut bpf = load_ebpf(opts)?;
     const STACK_INFO_SIZE: usize = std::mem::size_of::<StackInfo>();
 
     let mut stacks = Queue::<_, [u8; STACK_INFO_SIZE]>::try_from(bpf.take_map("STACKS").unwrap())?;
@@ -89,6 +120,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 let stack: StackInfo = unsafe { *v.as_ptr().cast() };
 
                 let record = deconstruct_stack(&stack, &stack_traces, &mut translator).unwrap();
+
                 println!("{}", record);
             }
             _ => {

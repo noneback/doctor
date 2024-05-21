@@ -89,7 +89,7 @@ unsafe fn try_profile(ctx: &PerfEventContext) -> Result<u32, u32> {
             COUNTS.insert(&stack_info, &1, 0);
         }
     }
-    
+
     STACKS.push(&stack_info, 0);
     Ok(0)
 }

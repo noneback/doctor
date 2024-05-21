@@ -12,6 +12,7 @@ anyhow = "1"
 env_logger = "0.10"
 libc = "0.2"
 log = "0.4"
+clap = { version = "4.5.4", features = ["derive"] }
 tokio = { version = "1.25", features = [
     "macros",
     "rt",
@@ -23,6 +24,7 @@ tokio = { version = "1.25", features = [
 blazesym = { version = "0.2.0-alpha.10", features = ["dwarf"] }
 procfs = "0.16.0"
 thiserror = "1.0.56"
+procfs-core = "0.16.0"
 
 [[bin]]
 name = "cpu-profier"

@@ -34,7 +34,7 @@ impl fmt::Display for PerfRecord {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut format_str = format!("{} {} {}\n", self.pid, self.cpu_id, self.cmdline);
         for frame in &self.frames {
-            format_str.push_str(format!("    {} {}({})\n", frame.ip, frame.sym, frame.elf).as_str());
+            format_str.push_str(format!("    0x{:x} {}({})\n", frame.ip, frame.sym, frame.elf).as_str());
         }
         write!(f, "{}", format_str)
     }
