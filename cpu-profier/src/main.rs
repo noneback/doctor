@@ -1,6 +1,6 @@
-use clap::{Arg, Parser};
+use clap::Parser;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Error;
@@ -10,13 +10,11 @@ use aya::util::online_cpus;
 use aya::{include_bytes_aligned, Bpf};
 use aya_log::BpfLogger;
 use cpu_profier_common::StackInfo;
-use libc::uint8_t;
 use log::{debug, info, warn};
 use profiler::perf_record::PerfRecord;
-use profiler::translate;
+
 use tokio::signal;
 
-use crate::profiler::formater;
 use crate::profiler::translate::Translator;
 mod profiler;
 
@@ -71,7 +69,7 @@ fn load_ebpf(opts: ProfileOptions) -> Result<Bpf, Error> {
         program.attach(
             perf_event::PerfTypeId::Software,
             perf_event::perf_sw_ids::PERF_COUNT_SW_CPU_CLOCK as u64,
-            perf_event::PerfEventScope::OneProcessAnyCpu { pid: pid },
+            perf_event::PerfEventScope::OneProcessAnyCpu { pid },
             perf_event::SamplePolicy::Frequency(1000),
             false,
         )?;
@@ -99,7 +97,7 @@ async fn main() -> Result<(), anyhow::Error> {
     const STACK_INFO_SIZE: usize = std::mem::size_of::<StackInfo>();
 
     let mut stacks = Queue::<_, [u8; STACK_INFO_SIZE]>::try_from(bpf.take_map("STACKS").unwrap())?;
-    let stack_count =
+    let _stack_count =
         HashMap::<_, [u8; STACK_INFO_SIZE], u64>::try_from(bpf.take_map("counts").unwrap())
             .unwrap();
     let stack_traces = StackTraceMap::try_from(bpf.map("stack_traces").unwrap()).unwrap();
@@ -109,7 +107,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let running_clone = Arc::clone(&running);
     let handle = tokio::spawn(async move {
-        signal::ctrl_c().await;
+        let _ = signal::ctrl_c().await;
         running.store(false, Ordering::SeqCst);
     });
 

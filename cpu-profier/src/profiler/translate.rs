@@ -2,30 +2,30 @@ use std::{
     collections::{BTreeMap, HashMap},
     fs::File,
     io::{self, BufRead, BufReader},
-    iter::Map,
     path::PathBuf,
     sync::Arc,
 };
 
-use anyhow::{anyhow, Error, Ok};
+use anyhow::{anyhow, Error};
 use aya::maps::stack_trace::StackTrace;
-use blazesym::symbolize::{Elf, Input, Process, Source, Symbolizer};
-use cpu_profier_common::StackInfo;
+use blazesym::symbolize::Symbolizer;
 
-use super::{perf_record::PerfStackFrame, process::ProcessMetadata};
+use super::{dso::Dso, perf_record::PerfStackFrame, process::ProcessMetadata};
 
 pub struct Translator {
     rootfs: PathBuf,
     ksyms: Option<BTreeMap<u64, String>>,
     symbolizer: Arc<Symbolizer>,
+    dso_cache: BTreeMap<String, Dso>,
 }
 
 impl Translator {
     pub fn new(rootfs: PathBuf) -> Self {
         Self {
-            rootfs: rootfs,
+            rootfs,
             ksyms: None,
             symbolizer: Arc::new(Symbolizer::new()),
+            dso_cache: BTreeMap::new(),
         }
     }
 
@@ -38,7 +38,6 @@ impl Translator {
                     .map_err(|e| anyhow!("translate_single -> {}", e))?,
             );
         }
-
         Ok(frames)
     }
 
@@ -86,102 +85,67 @@ impl Translator {
     }
 
     pub fn translate_usyms_v2(
-        &self,
+        &mut self,
         pid: u32,
         ips: Vec<u64>,
     ) -> Result<Vec<PerfStackFrame>, Error> {
-        let proc = ProcessMetadata::new(pid);
-        let mut dso_offsets: HashMap<String, Vec<u64>> = HashMap::new();
+        let proc = ProcessMetadata::new(pid)?;
+        let mut frames = Vec::new();
 
         ips.iter().for_each(|&ip| {
-            if let Some((dso, offset)) = proc.abs_addr(ip).ok() {
-                dso_offsets.entry(dso).or_insert_with(Vec::new).push(offset);
+            if let Ok((dso_path, offset)) = proc.abs_addr(ip) {
+                let dso = self
+                    .dso_cache
+                    .entry(dso_path.clone())
+                    .or_insert_with(|| Dso::new(dso_path.clone()));
+
+                let sym = dso.translate_single(&self.symbolizer, offset).unwrap();
+                frames.push(PerfStackFrame::new(ip, sym, dso_path.clone()));
             }
         });
 
-        let ret: Vec<Vec<PerfStackFrame>> = dso_offsets
-            .into_iter()
-            .map(|(path, offsets)| {
-                let src = Source::Elf(Elf::new(path.clone()));
-
-                let syms = self
-                    .symbolizer
-                    .symbolize(&src, Input::FileOffset(&offsets))
-                    .map_err(|e| anyhow!("symbolizer -> {}", e))
-                    .unwrap();
-
-                let r: Vec<PerfStackFrame> = syms
-                    .iter()
-                    .zip(ips.clone())
-                    .map(|(sym, ip)| match sym {
-                        blazesym::symbolize::Symbolized::Sym(symbol) => PerfStackFrame::new(
-                            ip,
-                            format!("{}_[u]", symbol.name),
-                            if symbol.code_info.is_none() {
-                                format!("{}", path).to_string()
-                            } else {
-                                match &symbol.code_info {
-                                    Some(code_info) => {
-                                        if let Some(path) = code_info.to_path().to_str() {
-                                            path.to_string()
-                                        } else {
-                                            "unknown".to_string()
-                                        }
-                                    }
-                                    None => "unkonwn".to_string(),
-                                }
-                            },
-                        ),
-                        blazesym::symbolize::Symbolized::Unknown(reason) => PerfStackFrame::new(
-                            ip,
-                            format!("unknown_0x{:x}_[u]", ip),
-                            reason.to_string(),
-                        ),
-                    })
-                    .collect();
-                r
-            })
-            .collect();
-
-        Ok(ret.into_iter().flat_map(|v| v).collect())
+        Ok(frames)
     }
 
-    pub fn translate_usyms(&self, pid: u32, ips: Vec<u64>) -> Result<Vec<PerfStackFrame>, Error> {
-        let src = Source::Process(Process::new(pid.into()));
-        let proc = ProcessMetadata::new(pid);
+    pub fn translate_usyms(
+        &mut self,
+        pid: u32,
+        ips: Vec<u64>,
+    ) -> Result<Vec<PerfStackFrame>, Error> {
+        let proc = ProcessMetadata::new(pid)?;
+        let mut dso_offsets: HashMap<String, Vec<(u64, u64)>> = HashMap::new();
 
-        let syms = self
-            .symbolizer
-            .symbolize(&src, Input::AbsAddr(&ips))
-            .map_err(|e| anyhow!("symbolizer -> {}", e))?;
+        ips.iter().for_each(|&ip| {
+            if let Ok((dso, offset)) = proc.abs_addr(ip) {
+                dso_offsets.entry(dso).or_default().push((offset, ip));
+            }
+        });
 
-        Ok(syms
+        let mut frames = dso_offsets
             .iter()
-            .zip(ips)
-            .map(|(sym, ip)| match sym {
-                blazesym::symbolize::Symbolized::Sym(symbol) => PerfStackFrame::new(
-                    ip,
-                    format!("{}_[u]", symbol.name),
-                    if symbol.code_info.is_none() {
-                        let dso = proc.find_dso_path(ip).unwrap();
-                        format!("{}_{:x}", dso, ip).to_string()
-                    } else {
-                        match &symbol.code_info {
-                            Some(code_info) => {
-                                if let Some(path) = code_info.to_path().to_str() {
-                                    path.to_string()
-                                } else {
-                                    "unknown".to_string()
-                                }
-                            }
-                            None => "unkonwn".to_string(),
-                        }
-                    },
-                ),
-                blazesym::symbolize::Symbolized::Unknown(reason) => {
-                    PerfStackFrame::new(ip, format!("unknown_0x{:x}_[u]", ip), reason.to_string())
-                }
+            .flat_map(|(path, mapping)| {
+                // use cache
+                let dso = self
+                    .dso_cache
+                    .entry(path.clone())
+                    .or_insert_with(|| Dso::new(path.clone()));
+
+                let offsets = mapping
+                    .iter()
+                    .map(|&(offset, _ip)| offset)
+                    .collect::<Vec<_>>();
+                let ips = mapping.iter().map(|(_offset, ip)| ip).collect::<Vec<_>>();
+
+                dso.translate(&self.symbolizer, &offsets)
+                    .unwrap()
+                    .into_iter()
+                    .zip(ips)
+                    .map(|(symbol, ip)| (ip, PerfStackFrame::new(*ip, symbol, path.clone())))
+                    .collect::<Vec<_>>()
             })
-            .collect())
+            .collect::<Vec<_>>();
+        frames.sort_by_key(|item| item.0);
+
+        Ok(frames.into_iter().map(|f| f.1).collect())
     }
 }

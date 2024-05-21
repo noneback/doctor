@@ -1,6 +1,6 @@
-use std::{fmt, string};
+use std::{fmt};
 
-use aya::maps::stack_trace::{StackFrame, StackTrace};
+
 use cpu_profier_common::StackInfo;
 
 pub struct PerfRecord {
@@ -23,9 +23,9 @@ pub struct PerfStackFrame {
 impl PerfStackFrame {
     pub fn new(ip: u64, sym: String, elf: String) -> Self {
         Self {
-            ip: ip,
-            sym: sym,
-            elf: elf,
+            ip,
+            sym,
+            elf,
         }
     }
 }
@@ -34,7 +34,8 @@ impl fmt::Display for PerfRecord {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut format_str = format!("{} {} {}\n", self.pid, self.cpu_id, self.cmdline);
         for frame in &self.frames {
-            format_str.push_str(format!("    0x{:x} {}({})\n", frame.ip, frame.sym, frame.elf).as_str());
+            format_str
+                .push_str(format!("    0x{:x} {}({})\n", frame.ip, frame.sym, frame.elf).as_str());
         }
         write!(f, "{}", format_str)
     }
@@ -51,7 +52,7 @@ impl PerfRecord {
             (None, Some(user_stacks)) => user_stacks,
             (Some(kernel_stacks), Some(user_stacks)) => kernel_stacks
                 .into_iter()
-                .chain(user_stacks.into_iter())
+                .chain(user_stacks)
                 .collect::<Vec<_>>(),
             (None, None) => Vec::default(),
         };
@@ -63,7 +64,7 @@ impl PerfRecord {
             cmdline: String::from_utf8_lossy(&stack.cmd).to_string(),
             ts: 0,
             cycle: 1,
-            frames: frames,
+            frames,
         }
     }
 }
