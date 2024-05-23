@@ -16,6 +16,6 @@ pub struct StackInfo {
 static SKIP_IDLE: u8 = 0;
 
 pub unsafe fn skip_idle() -> bool {
-    let skip = core::ptr::read_volatile(&SKIP_IDLE);  // TODO: why we need this?
+    let skip = core::ptr::read_volatile(&SKIP_IDLE); // TODO: why we need this?
     skip > 0
 }
