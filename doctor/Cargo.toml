@@ -1,0 +1,23 @@
+[package]
+name = "doctor"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+aya = "0.12"
+aya-log = "0.2"
+doctor-common = { path = "../doctor-common", features = ["user"] }
+anyhow = "1"
+env_logger = "0.10"
+libc = "0.2"
+log = "0.4"
+tokio = { version = "1.25", features = ["macros", "rt", "rt-multi-thread", "net", "signal", "time"] }
+blazesym = "0.2.0-rc.0"
+thiserror = "1.0.63"
+procfs = "0.16.0"
+clap = "4.5.9"
+
+[[bin]]
+name = "doctor"
+path = "src/main.rs"

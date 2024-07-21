@@ -1,0 +1,9 @@
+{
+  "rust-analyzer.linkedProjects": [
+    "Cargo.toml",
+    "doctor-ebpf/Cargo.toml"
+  ],
+  "cSpell.words": [
+    "bpfel"
+  ]
+}
