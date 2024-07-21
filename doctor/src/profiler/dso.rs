@@ -20,9 +20,11 @@ impl Dso {
         Ok(match sym {
             blazesym::symbolize::Symbolized::Sym(symbol) => symbol.name.to_string(),
             blazesym::symbolize::Symbolized::Unknown(r) => {
-                println!(
+                log::debug!(
                     "file offset {:x}, elf {}, reason {:#?}",
-                    offset, self.path, r
+                    offset,
+                    self.path,
+                    r
                 );
                 "unknown".to_string()
             }
@@ -45,9 +47,11 @@ impl Dso {
             .map(|sym| match sym {
                 blazesym::symbolize::Symbolized::Sym(symbol) => symbol.name.to_string(),
                 blazesym::symbolize::Symbolized::Unknown(r) => {
-                    println!(
+                    log::debug!(
                         "file offset {:#?}, elf {}, reason {:#?}",
-                        offsets, self.path, r
+                        offsets,
+                        self.path,
+                        r
                     );
                     "unknown".to_string()
                 }

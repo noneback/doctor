@@ -1,4 +1,4 @@
-# cpu-profier
+# doctor
 
 ## Prerequisites
 
@@ -17,6 +17,12 @@ You may also change the target architecture with the `--target` flag.
 
 ```bash
 cargo build
+```
+
+## Build eBPF and Userspace
+
+```bash
+cargo xtask build
 ```
 
 ## Run

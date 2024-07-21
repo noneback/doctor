@@ -1,15 +1,15 @@
 [package]
-name = "cpu-profier-ebpf"
+name = "doctor-ebpf"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-aya-bpf = { git = "https://github.com/aya-rs/aya" }
-aya-log-ebpf = { git = "https://github.com/aya-rs/aya" }
-cpu-profier-common = { path = "../cpu-profier-common" }
+aya-ebpf = "0.1.0"
+aya-log-ebpf = "0.1.0"
+doctor-common = { path = "../doctor-common" }
 
 [[bin]]
-name = "cpu-profier"
+name = "doctor"
 path = "src/main.rs"
 
 [profile.dev]

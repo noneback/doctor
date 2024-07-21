@@ -1,16 +1,16 @@
 #![no_std]
 #![no_main]
 
-use aya_bpf::{
+use aya_ebpf::{
     bindings::BPF_F_USER_STACK,
     helpers::bpf_get_smp_processor_id,
     macros::{map, perf_event},
     maps::{HashMap, Queue, StackTrace},
     programs::PerfEventContext,
-    BpfContext,
+    EbpfContext,
 };
 
-use cpu_profier_common::{skip_idle, StackInfo};
+use doctor_common::{skip_idle, StackInfo};
 
 const STACK_SIZE: u32 = 100000;
 
@@ -24,7 +24,7 @@ pub static STACKS: Queue<StackInfo> = Queue::with_max_entries(STACK_SIZE, 0);
 pub static mut COUNTS: HashMap<StackInfo, u64> = HashMap::with_max_entries(STACK_SIZE, 0);
 
 #[perf_event]
-pub fn cpu_profier(ctx: PerfEventContext) -> u32 {
+pub fn doctor(ctx: PerfEventContext) -> u32 {
     let pid = match try_cpu_profier(ctx) {
         Ok(ret) => ret,
         Err(ret) => ret,

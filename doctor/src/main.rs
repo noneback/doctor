@@ -9,7 +9,7 @@ use aya::programs::{perf_event, PerfEvent};
 use aya::util::online_cpus;
 use aya::{include_bytes_aligned, Bpf};
 use aya_log::BpfLogger;
-use cpu_profier_common::StackInfo;
+use doctor_common::StackInfo;
 use log::{debug, info, warn};
 use profiler::perf_record::PerfRecord;
 
@@ -50,11 +50,11 @@ fn load_ebpf(opts: ProfileOptions) -> Result<Bpf, Error> {
     // reach for `Bpf::load_file` instead.
     #[cfg(debug_assertions)]
     let mut bpf = Bpf::load(include_bytes_aligned!(
-        "../../target/bpfel-unknown-none/debug/cpu-profier"
+        "../../target/bpfel-unknown-none/debug/doctor"
     ))?;
     #[cfg(not(debug_assertions))]
     let mut bpf = Bpf::load(include_bytes_aligned!(
-        "../../target/bpfel-unknown-none/release/cpu-profier"
+        "../../target/bpfel-unknown-none/release/doctor"
     ))?;
     if let Err(e) = BpfLogger::init(&mut bpf) {
         // This can happen if you remove all log statements from your eBPF program.
@@ -62,7 +62,8 @@ fn load_ebpf(opts: ProfileOptions) -> Result<Bpf, Error> {
     }
     // This will raise scheduled events on each CPU at 1 HZ, triggered by the kernel based
     // on clock ticks.
-    let program: &mut PerfEvent = bpf.program_mut("cpu_profier").unwrap().try_into()?;
+    let program: &mut PerfEvent = bpf.program_mut("doctor").unwrap().try_into()?;
+
     program.load()?;
 
     if let Some(pid) = opts.pid {

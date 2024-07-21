@@ -1,7 +1,6 @@
-use std::{fmt};
+use std::fmt;
 
-
-use cpu_profier_common::StackInfo;
+use doctor_common::StackInfo;
 
 pub struct PerfRecord {
     pub pid: u32,
@@ -18,14 +17,16 @@ pub struct PerfStackFrame {
     ip: u64,
     pub sym: String,
     elf: String,
+    f_ost: u64,
 }
 
 impl PerfStackFrame {
-    pub fn new(ip: u64, sym: String, elf: String) -> Self {
+    pub fn new(ip: u64, sym: String, elf: String, f_ost: u64) -> Self {
         Self {
             ip,
             sym,
             elf,
+            f_ost,
         }
     }
 }
@@ -34,8 +35,13 @@ impl fmt::Display for PerfRecord {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut format_str = format!("{} {} {}\n", self.pid, self.cpu_id, self.cmdline);
         for frame in &self.frames {
-            format_str
-                .push_str(format!("    0x{:x} {}({})\n", frame.ip, frame.sym, frame.elf).as_str());
+            format_str.push_str(
+                format!(
+                    "    0x{:x} f_0x{:x} {}({})\n",
+                    frame.ip, frame.f_ost, frame.sym, frame.elf
+                )
+                .as_str(),
+            );
         }
         write!(f, "{}", format_str)
     }

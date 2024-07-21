@@ -77,6 +77,7 @@ impl Translator {
                         ip,
                         format!("{}_[k]", s),
                         elf_path.to_str().unwrap_or("unknow_kernel_elf").to_string(),
+                        ip,
                     )
                 })
                 .unwrap());
@@ -100,7 +101,9 @@ impl Translator {
                     .or_insert_with(|| Dso::new(dso_path.clone()));
 
                 let sym = dso.translate_single(&self.symbolizer, offset).unwrap();
-                frames.push(PerfStackFrame::new(ip, sym, dso_path.clone()));
+                if !sym.eq("unknown") {
+                    frames.push(PerfStackFrame::new(ip, sym, dso_path.clone(), offset));
+                }
             }
         });
 
@@ -140,7 +143,7 @@ impl Translator {
                     .unwrap()
                     .into_iter()
                     .zip(ips)
-                    .map(|(symbol, ip)| (ip, PerfStackFrame::new(*ip, symbol, path.clone())))
+                    .map(|(symbol, ip)| (ip, PerfStackFrame::new(*ip, symbol, path.clone(), 0)))
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
