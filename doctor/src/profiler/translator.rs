@@ -49,7 +49,7 @@ impl Translator {
         // for frame in record.stack_frames {}
         let ips = utrace.frames().iter().map(|f| f.ip).collect::<Vec<_>>();
         self.translate_usyms_v2(pid, ips)
-            .map_err(|e| anyhow!("translate_utrace pid {} -> {}", pid, e))
+            .map_err(|e: Error| anyhow!("translate_utrace pid {} -> {}", pid, e))
     }
 
     pub fn translate_ksyms(&mut self, ip: u64) -> Result<PerfStackFrame, Error> {
