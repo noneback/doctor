@@ -15,7 +15,7 @@ use profiler::perf_record::PerfRecord;
 
 use tokio::signal;
 
-use crate::profiler::translate::Translator;
+use crate::profiler::translator::Translator;
 mod profiler;
 
 #[derive(Parser, Debug)]

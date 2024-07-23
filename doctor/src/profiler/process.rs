@@ -1,14 +1,20 @@
+use std::path::PathBuf;
+
 use anyhow::{anyhow, Error};
 use procfs::process::{MMPermissions, MemoryMap};
 
 pub struct ProcessMetadata {
-    pid: u32,
+    pub pid: u32,
+    pub rootfs: PathBuf,
+    pub cmdline: Vec<String>,
     maps: Vec<MemoryMap>,
 }
 
 impl ProcessMetadata {
     pub fn new(pid: u32) -> Result<Self, Error> {
         let proc = procfs::process::Process::new(pid as i32)?;
+        let rootfs = PathBuf::from(format!("/proc/{}/root", pid));
+        let cmdline = proc.cmdline()?;
         let maps = proc
             .maps()?
             .0
@@ -20,7 +26,12 @@ impl ProcessMetadata {
             })
             .collect::<Vec<_>>();
 
-        Ok(Self { pid, maps })
+        Ok(Self {
+            pid,
+            rootfs,
+            cmdline,
+            maps,
+        })
     }
 
     pub fn find_mapper(&self, addr: u64) -> Result<&MemoryMap, Error> {
@@ -30,16 +41,19 @@ impl ProcessMetadata {
             .ok_or(anyhow!("mapper not found"))
     }
 
-    pub fn abs_addr(&self, v_addr: u64) -> Result<(String, u64), Error> {
+    pub fn abs_addr(&self, v_addr: u64) -> Result<(PathBuf, u64), Error> {
         let mapper = self.find_mapper(v_addr)?;
-        let path = match &mapper.pathname {
-            procfs::process::MMapPath::Path(p) => p.to_str(),
-            _ => None,
-        }
-        .ok_or(anyhow!("dso not found"))?
-        .to_string();
+        match &mapper.pathname {
+            procfs::process::MMapPath::Path(p) => {
+                let path = match p.to_str().unwrap().strip_suffix(" (deleted)") {
+                    Some(striped) => self.rootfs.join(striped),
+                    None => self.rootfs.join(p),
+                };
 
-        Ok((path, mapper.offset + (v_addr - mapper.address.0)))
+                Ok((path, mapper.offset + (v_addr - mapper.address.0)))
+            }
+            _ => Err(anyhow!("dso not found")),
+        }
     }
 }
 

@@ -4,4 +4,4 @@ pub mod formater;
 pub mod perf_record;
 pub mod process;
 pub mod profiler;
-pub mod translate;
+pub mod translator;

@@ -16,7 +16,7 @@ pub struct Translator {
     rootfs: PathBuf,
     ksyms: Option<BTreeMap<u64, String>>,
     symbolizer: Arc<Symbolizer>,
-    dso_cache: BTreeMap<String, Dso>,
+    dso_cache: BTreeMap<PathBuf, Dso>,
 }
 
 impl Translator {
@@ -49,7 +49,7 @@ impl Translator {
         // for frame in record.stack_frames {}
         let ips = utrace.frames().iter().map(|f| f.ip).collect::<Vec<_>>();
         self.translate_usyms_v2(pid, ips)
-            .map_err(|e| anyhow!("translate_utrace -> {}", e))
+            .map_err(|e| anyhow!("translate_utrace pid {} -> {}", pid, e))
     }
 
     pub fn translate_ksyms(&mut self, ip: u64) -> Result<PerfStackFrame, Error> {
@@ -73,12 +73,7 @@ impl Translator {
                 .range(..=ip)
                 .next_back()
                 .map(|(_, s)| {
-                    PerfStackFrame::new(
-                        ip,
-                        format!("{}_[k]", s),
-                        elf_path.to_str().unwrap_or("unknow_kernel_elf").to_string(),
-                        ip,
-                    )
+                    PerfStackFrame::new(ip, format!("{}_[k]", s), elf_path, ip)
                 })
                 .unwrap());
         }
@@ -93,19 +88,29 @@ impl Translator {
         let proc = ProcessMetadata::new(pid)?;
         let mut frames = Vec::new();
 
-        ips.iter().for_each(|&ip| {
+        for ip in ips {
             if let Ok((dso_path, offset)) = proc.abs_addr(ip) {
                 let dso = self
                     .dso_cache
                     .entry(dso_path.clone())
                     .or_insert_with(|| Dso::new(dso_path.clone()));
 
-                let sym = dso.translate_single(&self.symbolizer, offset).unwrap();
+                let sym = dso
+                    .translate_single(&self.symbolizer, offset)
+                    .map_err(|e| {
+                        anyhow!(
+                            "translate_usyms_v2, cmdline {:?}, pid {} -> {}",
+                            proc.cmdline,
+                            pid,
+                            e
+                        )
+                    })?;
+
                 if !sym.eq("unknown") {
                     frames.push(PerfStackFrame::new(ip, sym, dso_path.clone(), offset));
                 }
             }
-        });
+        }
 
         Ok(frames)
     }
@@ -116,7 +121,7 @@ impl Translator {
         ips: Vec<u64>,
     ) -> Result<Vec<PerfStackFrame>, Error> {
         let proc = ProcessMetadata::new(pid)?;
-        let mut dso_offsets: HashMap<String, Vec<(u64, u64)>> = HashMap::new();
+        let mut dso_offsets: HashMap<PathBuf, Vec<(u64, u64)>> = HashMap::new();
 
         ips.iter().for_each(|&ip| {
             if let Ok((dso, offset)) = proc.abs_addr(ip) {

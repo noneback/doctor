@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, path::PathBuf};
 
 use doctor_common::StackInfo;
 
@@ -16,12 +16,12 @@ pub struct PerfRecord {
 pub struct PerfStackFrame {
     ip: u64,
     pub sym: String,
-    elf: String,
+    elf: PathBuf,
     f_ost: u64,
 }
 
 impl PerfStackFrame {
-    pub fn new(ip: u64, sym: String, elf: String, f_ost: u64) -> Self {
+    pub fn new(ip: u64, sym: String, elf: PathBuf, f_ost: u64) -> Self {
         Self {
             ip,
             sym,
@@ -37,7 +37,7 @@ impl fmt::Display for PerfRecord {
         for frame in &self.frames {
             format_str.push_str(
                 format!(
-                    "    0x{:x} f_0x{:x} {}({})\n",
+                    "    0x{:x} f_0x{:x} {}({:?})\n",
                     frame.ip, frame.f_ost, frame.sym, frame.elf
                 )
                 .as_str(),
