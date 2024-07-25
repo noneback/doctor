@@ -10,7 +10,10 @@ use anyhow::{anyhow, Error};
 use aya::maps::stack_trace::StackTrace;
 use blazesym::symbolize::Symbolizer;
 
-use super::{dso::Dso, perf_record::PerfStackFrame, process::ProcessMetadata};
+use super::{
+    dso::Dso, perf_record::PerfStackFrame, process::ProcessMetadata,
+    symbolizer::symbolizerr::Symbolizerr,
+};
 
 pub struct Translator {
     rootfs: PathBuf,
@@ -48,7 +51,7 @@ impl Translator {
     ) -> Result<Vec<PerfStackFrame>, Error> {
         // for frame in record.stack_frames {}
         let ips = utrace.frames().iter().map(|f| f.ip).collect::<Vec<_>>();
-        self.translate_usyms_v2(pid, ips)
+        self.translate_usyms_v3(pid, ips)
             .map_err(|e: Error| anyhow!("translate_utrace pid {} -> {}", pid, e))
     }
 
@@ -72,9 +75,7 @@ impl Translator {
             return Ok(ksyms
                 .range(..=ip)
                 .next_back()
-                .map(|(_, s)| {
-                    PerfStackFrame::new(ip, format!("{}_[k]", s), elf_path, ip)
-                })
+                .map(|(_, s)| PerfStackFrame::new(ip, format!("{}_[k]", s), elf_path, ip))
                 .unwrap());
         }
         Err(anyhow::anyhow!("translate_ksyms 0x{} NotFound", ip))
@@ -109,6 +110,42 @@ impl Translator {
                 if !sym.eq("unknown") {
                     frames.push(PerfStackFrame::new(ip, sym, dso_path.clone(), offset));
                 }
+            }
+        }
+
+        Ok(frames)
+    }
+
+    pub fn translate_usyms_v3(
+        &mut self,
+        pid: u32,
+        ips: Vec<u64>,
+    ) -> Result<Vec<PerfStackFrame>, Error> {
+        let symer = Symbolizerr::new("/root/workspace/profiler/bianque/doctor/tests".into())?;
+        let proc = ProcessMetadata::new(pid)?;
+        let mut frames = Vec::new();
+
+        for ip in ips {
+            if let Ok((dso_path, offset)) = proc.abs_addr(ip) {
+                let _dso = self
+                    .dso_cache
+                    .entry(dso_path.clone())
+                    .or_insert_with(|| Dso::new(dso_path.clone()));
+
+                let psf = match symer.symbolize(&dso_path, offset) {
+                    Ok(sym) => PerfStackFrame::new(
+                        ip,
+                        sym.name.unwrap_or("unknown".into()),
+                        dso_path.clone(),
+                        offset,
+                    ),
+                    Err(e) => {
+                        log::debug!("Symbolize {}, file {:#?}: {}", pid, &dso_path, e);
+                        PerfStackFrame::new(ip, "unknown".into(), dso_path.clone(), offset)
+                    }
+                };
+
+                frames.push(psf);
             }
         }
 

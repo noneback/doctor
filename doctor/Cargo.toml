@@ -19,6 +19,8 @@ procfs = "0.16.0"
 clap = "4.5.9"
 goblin = {version = "0.8.2", features = ["elf32","elf32"]}
 moka = { version = "0.12.8", features = ["future","sync"] }
+sled = { version = "0.34.7", features = ["io_uring", "zstd"] }
+
 
 [[bin]]
 name = "doctor"

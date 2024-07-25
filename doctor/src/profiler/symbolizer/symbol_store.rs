@@ -1,67 +1,39 @@
 use goblin::elf::Elf;
-use std::cmp::Ordering;
+use sled::Db;
 use std::collections::BTreeSet;
-use std::fmt::Display;
 use std::fs::File;
-use std::hash::{Hash, Hasher};
 use std::io::{BufReader, Read};
 use std::path::PathBuf;
 
+use super::error::SymbolizerError;
+use super::symbol::Symbol;
+
 use moka::sync::Cache;
 
-use super::error::SymbolizerError;
-
-#[derive(PartialEq, Eq, PartialOrd, Clone, Debug)]
-struct Symbol {
-    pub(crate) addr: u64,
-    pub(crate) name: Option<String>,
-}
-
-impl Display for Symbol {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.name {
-            Some(name) => write!(f, "{} (f_0x{:016X})", name, self.addr),
-            None => write!(f, "Unnamed (f_0x{:016X})", self.addr),
-        }
-    }
-}
-
-impl Hash for Symbol {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.addr.hash(state); // only for single dso file
-    }
-}
-
-impl Ord for Symbol {
-    fn cmp(&self, other: &Self) -> Ordering {
-        match self.addr.cmp(&other.addr) {
-            Ordering::Equal => self.name.cmp(&other.name),
-            other => other,
-        }
-    }
-}
 // use rusqlite::Connection;
 pub struct SymbolStore {
     cache: Cache<PathBuf, BTreeSet<Symbol>>,
+    db: Db,
 }
 
 impl SymbolStore {
-    pub fn new(path: PathBuf) -> SymbolStore {
-        Self {
+    pub fn new(path: PathBuf) -> Result<SymbolStore, SymbolizerError> {
+        Ok(Self {
             cache: Cache::new(100),
-        }
+            db: sled::open(path)?,
+        })
     }
 
-    pub fn get_symbol(&self, dso: &PathBuf, offset: u64) -> Option<Symbol> {
-        let syms = self.fetch_elf(&dso).unwrap();
+    pub fn get_symbol(&self, dso: &PathBuf, offset: u64) -> Result<Symbol, SymbolizerError> {
+        let syms = self.fetch_elf(dso)?;
         let target = Symbol {
             addr: offset,
             name: None,
         };
 
         match syms.range(..target).next_back() {
-            Some(s) => Some(s.clone()),
-            None => None,
+            Some(sym) => Ok(sym.clone()),
+            None => Err(SymbolizerError::SymbolNotFound(dso.clone(), offset)),
         }
     }
 
@@ -78,10 +50,13 @@ impl SymbolStore {
             return Ok(());
         }
 
-        let file = File::open(dso.clone())?;
+        let file = File::open(dso.clone())
+            .map_err(|e| SymbolizerError::SymbolStoreIOFailed(dso.clone(), e))?;
         let mut reader = BufReader::new(file);
         let mut buffer = Vec::new();
-        reader.read_to_end(&mut buffer)?;
+        reader
+            .read_to_end(&mut buffer)
+            .map_err(|e| SymbolizerError::SymbolStoreIOFailed(dso.clone(), e))?;
         let elf = Elf::parse(&buffer).expect("Failed to parse ELF file");
         // static syms
         let mut syms = elf
@@ -92,13 +67,10 @@ impl SymbolStore {
                 let addr = sym.st_value;
                 match elf.dynstrtab.get_at(sym.st_name) {
                     Some(n) => Symbol {
-                        addr: addr,
+                        addr,
                         name: Some(String::from(n)),
                     },
-                    None => Symbol {
-                        addr: addr,
-                        name: None,
-                    },
+                    None => Symbol { addr, name: None },
                 }
             })
             .collect::<BTreeSet<_>>();
@@ -111,13 +83,10 @@ impl SymbolStore {
                 let addr = sym.st_value;
                 match elf.dynstrtab.get_at(sym.st_name) {
                     Some(n) => Symbol {
-                        addr: addr,
+                        addr,
                         name: Some(String::from(n)),
                     },
-                    None => Symbol {
-                        addr: addr,
-                        name: None,
-                    },
+                    None => Symbol { addr, name: None },
                 }
             })
             .collect::<BTreeSet<_>>();
@@ -135,11 +104,8 @@ mod tests {
     fn test_fetch_elf() {
         // 获取当前可执行文件路径
         println!("start");
-        let ss = SymbolStore::new("./".into());
-        let sym = ss.get_symbol(
-            &"/usr/local/aegis/aegis_client/aegis_11_91/libFileQuara.so".into(),
-            0x65417,
-        );
+        let ss = SymbolStore::new("/home/noneback/workspace/doctor/doctor/tests".into()).unwrap();
+        let sym = ss.get_symbol(&"/usr/lib/libc.so.6".into(), 0x92242);
 
         println!("sym:\n {}", sym.unwrap());
     }
