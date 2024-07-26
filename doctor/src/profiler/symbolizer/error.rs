@@ -11,4 +11,6 @@ pub enum SymbolizerError {
     SymbolStoreIOFailed(PathBuf, std::io::Error),
     #[error("symbol not found in {0}, off {1}")]
     SymbolNotFound(PathBuf, u64),
+    #[error("translate {0} f_offset {1} to virt_offset failed")]
+    TranslateVirtOffsetFailed(PathBuf, u64),
 }

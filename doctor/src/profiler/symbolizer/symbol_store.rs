@@ -1,4 +1,6 @@
-use goblin::elf::Elf;
+use crate::profiler::symbolizer::elf::ElfMetadata;
+use goblin::elf::program_header::PT_LOAD;
+use goblin::elf::{Elf, ProgramHeader};
 use sled::Db;
 use std::collections::BTreeSet;
 use std::fs::File;
@@ -12,7 +14,7 @@ use moka::sync::Cache;
 
 // use rusqlite::Connection;
 pub struct SymbolStore {
-    cache: Cache<PathBuf, BTreeSet<Symbol>>,
+    cache: Cache<PathBuf, ElfMetadata>,
     db: Db,
 }
 
@@ -24,20 +26,16 @@ impl SymbolStore {
         })
     }
 
-    pub fn get_symbol(&self, dso: &PathBuf, offset: u64) -> Result<Symbol, SymbolizerError> {
-        let syms = self.fetch_elf(dso)?;
-        let target = Symbol {
-            addr: offset,
-            name: None,
-        };
-
-        match syms.range(..target).next_back() {
-            Some(sym) => Ok(sym.clone()),
-            None => Err(SymbolizerError::SymbolNotFound(dso.clone(), offset)),
-        }
+    fn translate_virt_offset(_dso: &PathBuf, _offset: u64) -> Option<u64> {
+        None
     }
 
-    fn fetch_elf(&self, dso: &PathBuf) -> Result<BTreeSet<Symbol>, SymbolizerError> {
+    pub fn get_symbol(&self, dso: &PathBuf, offset: u64) -> Result<Symbol, SymbolizerError> {
+        let elf = self.fetch_elf(dso)?;
+        elf.find_symbol(offset)
+    }
+
+    fn fetch_elf(&self, dso: &PathBuf) -> Result<ElfMetadata, SymbolizerError> {
         self.load_elf(dso)?;
         match self.cache.get(dso) {
             Some(val) => Ok(val),
@@ -58,7 +56,13 @@ impl SymbolStore {
             .read_to_end(&mut buffer)
             .map_err(|e| SymbolizerError::SymbolStoreIOFailed(dso.clone(), e))?;
         let elf = Elf::parse(&buffer).expect("Failed to parse ELF file");
-        // static syms
+        let pt_loads = elf
+            .program_headers
+            .into_iter()
+            .filter(|h| h.p_type == PT_LOAD)
+            .collect::<Vec<ProgramHeader>>();
+
+        // static sy: BTreeSet<Symbol>ms
         let mut syms = elf
             .syms
             .iter()
@@ -91,7 +95,8 @@ impl SymbolStore {
             })
             .collect::<BTreeSet<_>>();
         syms.extend(dyn_syms);
-        self.cache.insert(dso.clone(), syms);
+        self.cache
+            .insert(dso.clone(), ElfMetadata::new(dso.clone(), syms, pt_loads));
         Ok(())
     }
 }
