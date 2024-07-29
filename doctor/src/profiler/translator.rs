@@ -51,7 +51,7 @@ impl Translator {
     ) -> Result<Vec<PerfStackFrame>, Error> {
         // for frame in record.stack_frames {}
         let ips = utrace.frames().iter().map(|f| f.ip).collect::<Vec<_>>();
-        self.translate_usyms_v3(pid, ips)
+        self.translate_usyms_v2(pid, ips)
             .map_err(|e: Error| anyhow!("translate_utrace pid {} -> {}", pid, e))
     }
 

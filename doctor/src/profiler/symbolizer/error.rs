@@ -13,4 +13,6 @@ pub enum SymbolizerError {
     SymbolNotFound(PathBuf, u64),
     #[error("translate {0} f_offset {1} to virt_offset failed")]
     TranslateVirtOffsetFailed(PathBuf, u64),
+    #[error("load {0}, elf failed: {1}")]
+    MMapIOFailed(PathBuf, std::io::Error),
 }
