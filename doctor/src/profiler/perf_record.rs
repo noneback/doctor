@@ -33,7 +33,10 @@ impl PerfStackFrame {
 
 impl fmt::Display for PerfRecord {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let mut format_str = format!("{} {} {}\n", self.pid, self.cpu_id, self.cmdline);
+        let mut format_str = format!(
+            "{} {} {} {}\n",
+            self.pid, self.cpu_id, self.tgid, self.cmdline
+        );
         for frame in &self.frames {
             format_str.push_str(
                 format!(

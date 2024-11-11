@@ -48,55 +48,8 @@ impl SymbolStore {
             return Ok(());
         }
 
-        let file = File::open(dso.clone())
-            .map_err(|e| SymbolizerError::SymbolStoreIOFailed(dso.clone(), e))?;
-        let mut reader = BufReader::new(file);
-        let mut buffer = Vec::new();
-        reader
-            .read_to_end(&mut buffer)
-            .map_err(|e| SymbolizerError::SymbolStoreIOFailed(dso.clone(), e))?;
-        let elf = Elf::parse(&buffer).expect("Failed to parse ELF file");
-        let pt_loads = elf
-            .program_headers
-            .into_iter()
-            .filter(|h| h.p_type == PT_LOAD)
-            .collect::<Vec<ProgramHeader>>();
-
-        // static sy: BTreeSet<Symbol>ms
-        let mut syms = elf
-            .syms
-            .iter()
-            .filter(|s| s.is_function())
-            .map(|sym| {
-                let addr = sym.st_value;
-                match elf.dynstrtab.get_at(sym.st_name) {
-                    Some(n) => Symbol {
-                        addr,
-                        name: Some(String::from(n)),
-                    },
-                    None => Symbol { addr, name: None },
-                }
-            })
-            .collect::<BTreeSet<_>>();
-
-        let dyn_syms = elf
-            .dynsyms
-            .iter()
-            .filter(|s| s.is_function())
-            .map(|sym| {
-                let addr = sym.st_value;
-                match elf.dynstrtab.get_at(sym.st_name) {
-                    Some(n) => Symbol {
-                        addr,
-                        name: Some(String::from(n)),
-                    },
-                    None => Symbol { addr, name: None },
-                }
-            })
-            .collect::<BTreeSet<_>>();
-        syms.extend(dyn_syms);
         self.cache
-            .insert(dso.clone(), ElfMetadata::new(dso.clone(), syms, pt_loads));
+            .insert(dso.clone(), ElfMetadata::new(dso.clone())?);
         Ok(())
     }
 }
@@ -110,7 +63,7 @@ mod tests {
         // 获取当前可执行文件路径
         println!("start");
         let ss = SymbolStore::new("/home/noneback/workspace/doctor/doctor/tests".into()).unwrap();
-        let sym = ss.get_symbol(&"/usr/lib/libc.so.6".into(), 0x92242);
+        let sym = ss.get_symbol(&"/root/workspace/profiler/bianque/main".into(), 0x3321b);
 
         println!("sym:\n {}", sym.unwrap());
     }

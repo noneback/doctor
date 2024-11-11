@@ -1,9 +1,28 @@
-use std::{collections::BTreeSet, path::PathBuf};
-
-
-use goblin::elf::ProgramHeader;
+use std::{
+    collections::BTreeSet,
+    error::Error,
+    fs::File,
+    io::{BufReader, Read},
+    path::PathBuf,
+};
 
 use super::{error::SymbolizerError, symbol::Symbol};
+use anyhow::Ok;
+use blazesym::symbolize::Symbolize;
+use gimli::{Dwarf, RunTimeEndian, Section, SectionId};
+use goblin::{
+    container::Endian,
+    elf::{program_header::PT_LOAD, Elf, ProgramHeader},
+};
+use memmap2::{Mmap, MmapOptions};
+
+struct DwarfInfo {}
+
+impl DwarfInfo {
+    pub fn new() -> Self {
+        DwarfInfo {}
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ElfMetadata {
@@ -13,12 +32,96 @@ pub struct ElfMetadata {
 }
 
 impl ElfMetadata {
-    pub fn new(path: PathBuf, syms: BTreeSet<Symbol>, pt_loads: Vec<ProgramHeader>) -> ElfMetadata {
-        Self {
+    pub fn new(path: PathBuf) -> Result<ElfMetadata, SymbolizerError> {
+        let file = File::open(path.clone())
+            .map_err(|e| SymbolizerError::SymbolStoreIOFailed(path.clone(), e))?;
+        let mmap = unsafe {
+            MmapOptions::new()
+                .map(&file)
+                .map_err(|e| SymbolizerError::MMapIOFailed(path.clone(), e))?
+        };
+
+        let elf = Elf::parse(&mmap).expect("Failed to parse ELF file");
+        let pt_loads = elf
+            .program_headers
+            .into_iter()
+            .filter(|h| h.p_type == PT_LOAD)
+            .collect::<Vec<ProgramHeader>>();
+
+        // static sy: BTreeSet<Symbol>ms
+        let mut syms = elf
+            .syms
+            .iter()
+            .filter(|s| s.is_function())
+            .map(|sym| {
+                let addr = sym.st_value;
+                match elf.dynstrtab.get_at(sym.st_name) {
+                    Some(n) => Symbol {
+                        addr,
+                        name: Some(String::from(n)),
+                    },
+                    None => Symbol { addr, name: None },
+                }
+            })
+            .collect::<BTreeSet<_>>();
+
+        let dyn_syms = elf
+            .dynsyms
+            .iter()
+            .filter(|s| s.is_function())
+            .map(|sym| {
+                let addr = sym.st_value;
+                match elf.dynstrtab.get_at(sym.st_name) {
+                    Some(n) => Symbol {
+                        addr,
+                        name: Some(String::from(n)),
+                    },
+                    None => Symbol { addr, name: None },
+                }
+            })
+            .collect::<BTreeSet<_>>();
+        syms.extend(dyn_syms);
+
+        let endian = if elf.little_endian {
+            RunTimeEndian::Little
+        } else {
+            RunTimeEndian::Big
+        };
+
+        let dwarf = Dwarf::load(|id| Self::load_dwarf(id, elf, mmap, endian))
+            .map_err(|e| SymbolizerError::GmiliFailed(Box::new(e)))?;
+
+        Ok(Self {
             path,
             syms,
             pt_loads,
-        }
+        })
+    }
+
+    fn load_dwarf<'input, Endian: gimli::Endianity>(
+        id: SectionId,
+        elf: Elf,
+        mmap: Mmap,
+        endian: RunTimeEndian,
+    ) -> Result<gimli::EndianSlice<'input, Endian>, SymbolizerError> {
+        let loader = |id: SectionId| -> Result<_, gimli::EndianSlice<Endian>> {
+            let data = match elf
+                .section_headers
+                .iter()
+                .find(|h| elf.shdr_strtab.get_at(h.sh_name).unwrap_or("") == id.name())
+            {
+                Some(section) => {
+                    let start = section.sh_offset as usize;
+                    let end = start + section.sh_size as usize;
+                    &mmap[start..end]
+                }
+                None => &[],
+            };
+            Ok(gimli::EndianSlice::new(data, endian))
+        };
+
+        let endian_slice = EndianSlice::new(data, endian);
+        Ok(endian_slice)
     }
 
     fn translate(&self, file_offset: u64) -> Option<u64> {
