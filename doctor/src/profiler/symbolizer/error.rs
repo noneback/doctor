@@ -15,6 +15,6 @@ pub enum SymbolizerError {
     TranslateVirtOffsetFailed(PathBuf, u64),
     #[error("load {0}, elf failed: {1}")]
     MMapIOFailed(PathBuf, std::io::Error),
-    #[error("gmili: {0}")]
-    GmiliFailed(Box<dyn std::error::Error>),
+    #[error("gmili load: {0}")]
+    GmiliFailed(#[from] gimli::Error),
 }

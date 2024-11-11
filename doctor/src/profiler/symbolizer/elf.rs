@@ -7,8 +7,8 @@ use std::{
 };
 
 use super::{error::SymbolizerError, symbol::Symbol};
-use anyhow::Ok;
-use blazesym::symbolize::Symbolize;
+
+use blazesym::symbolize::{Sym, Symbolize};
 use gimli::{Dwarf, RunTimeEndian, Section, SectionId};
 use goblin::{
     container::Endian,
@@ -28,6 +28,7 @@ impl DwarfInfo {
 pub struct ElfMetadata {
     path: PathBuf,
     syms: BTreeSet<Symbol>,
+    debug_info: BTreeSet<Symbol>, // from dwarf
     pt_loads: Vec<ProgramHeader>,
 }
 
@@ -44,7 +45,9 @@ impl ElfMetadata {
         let elf = Elf::parse(&mmap).expect("Failed to parse ELF file");
         let pt_loads = elf
             .program_headers
+            .clone()
             .into_iter()
+            .map(|h| h.clone())
             .filter(|h| h.p_type == PT_LOAD)
             .collect::<Vec<ProgramHeader>>();
 
@@ -88,40 +91,37 @@ impl ElfMetadata {
             RunTimeEndian::Big
         };
 
-        let dwarf = Dwarf::load(|id| Self::load_dwarf(id, elf, mmap, endian))
-            .map_err(|e| SymbolizerError::GmiliFailed(Box::new(e)))?;
+        let dwarf = Dwarf::load(|id| Self::load_dwarf(id, &elf, &mmap, endian))?;
+        let debug_info = BTreeSet::new();
 
         Ok(Self {
             path,
             syms,
+            debug_info,
             pt_loads,
         })
     }
 
     fn load_dwarf<'input, Endian: gimli::Endianity>(
         id: SectionId,
-        elf: Elf,
-        mmap: Mmap,
-        endian: RunTimeEndian,
+        elf: &Elf,
+        mmap: &'input Mmap,
+        endian: Endian,
     ) -> Result<gimli::EndianSlice<'input, Endian>, SymbolizerError> {
-        let loader = |id: SectionId| -> Result<_, gimli::EndianSlice<Endian>> {
-            let data = match elf
-                .section_headers
-                .iter()
-                .find(|h| elf.shdr_strtab.get_at(h.sh_name).unwrap_or("") == id.name())
-            {
-                Some(section) => {
-                    let start = section.sh_offset as usize;
-                    let end = start + section.sh_size as usize;
-                    &mmap[start..end]
-                }
-                None => &[],
-            };
-            Ok(gimli::EndianSlice::new(data, endian))
+        let data = match elf
+            .section_headers
+            .iter()
+            .find(|h| elf.shdr_strtab.get_at(h.sh_name).unwrap_or("") == id.name())
+        {
+            Some(section) => {
+                let start = section.sh_offset as usize;
+                let end = start + section.sh_size as usize;
+                &mmap[start..end]
+            }
+            None => &[],
         };
 
-        let endian_slice = EndianSlice::new(data, endian);
-        Ok(endian_slice)
+        Ok(gimli::EndianSlice::new(data, endian))
     }
 
     fn translate(&self, file_offset: u64) -> Option<u64> {

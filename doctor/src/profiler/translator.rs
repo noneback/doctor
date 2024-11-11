@@ -11,7 +11,7 @@ use aya::maps::stack_trace::StackTrace;
 use blazesym::symbolize::Symbolizer;
 
 use super::{
-    dso::Dso, perf_record::PerfStackFrame, process::ProcessMetadata,
+    dso::Dso, error::TranslateError, perf_record::PerfStackFrame, process::ProcessMetadata,
     symbolizer::symbolizerr::Symbolizerr,
 };
 
@@ -51,8 +51,8 @@ impl Translator {
     ) -> Result<Vec<PerfStackFrame>, Error> {
         // for frame in record.stack_frames {}
         let ips = utrace.frames().iter().map(|f| f.ip).collect::<Vec<_>>();
-        self.translate_usyms_v2(pid, ips)
-            .map_err(|e: Error| anyhow!("translate_utrace pid {} -> {}", pid, e))
+        self.translate_usyms_v3(pid, ips)
+            .map_err(|e| anyhow!("translate_utrace pid {} -> {}", pid, e))
     }
 
     pub fn translate_ksyms(&mut self, ip: u64) -> Result<PerfStackFrame, Error> {
@@ -120,7 +120,7 @@ impl Translator {
         &mut self,
         pid: u32,
         ips: Vec<u64>,
-    ) -> Result<Vec<PerfStackFrame>, Error> {
+    ) -> Result<Vec<PerfStackFrame>, TranslateError> {
         let symer = Symbolizerr::new("/root/workspace/profiler/bianque/doctor/tests".into())?;
         let proc = ProcessMetadata::new(pid)?;
         let mut frames = Vec::new();
