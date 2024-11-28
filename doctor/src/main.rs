@@ -1,14 +1,14 @@
+use aya_log::EbpfLogger;
 use clap::Parser;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Error;
+use anyhow::{anyhow, Error};
 use aya::maps::{HashMap, MapData, Queue, StackTraceMap};
 use aya::programs::{perf_event, PerfEvent};
 use aya::util::online_cpus;
-use aya::{include_bytes_aligned, Bpf};
-use aya_log::BpfLogger;
+use aya::{include_bytes_aligned, Ebpf};
 use doctor_common::StackInfo;
 use log::{debug, info, warn};
 use profiler::perf_record::PerfRecord;
@@ -32,7 +32,7 @@ struct ProfileOptions {
     debug: Option<bool>,
 }
 
-fn load_ebpf(opts: ProfileOptions) -> Result<Bpf, Error> {
+fn load_ebpf(opts: ProfileOptions) -> Result<Ebpf, Error> {
     // Bump the memlock rlimit. This is needed for older kernels that don't use the
     // new memcg based accounting, see https://lwn.net/Articles/837122/
     let rlim = libc::rlimit {
@@ -49,14 +49,14 @@ fn load_ebpf(opts: ProfileOptions) -> Result<Bpf, Error> {
     // like to specify the eBPF program at runtime rather than at compile-time, you can
     // reach for `Bpf::load_file` instead.
     #[cfg(debug_assertions)]
-    let mut bpf = Bpf::load(include_bytes_aligned!(
+    let mut bpf = Ebpf::load(include_bytes_aligned!(
         "../../target/bpfel-unknown-none/debug/doctor"
     ))?;
     #[cfg(not(debug_assertions))]
     let mut bpf = Bpf::load(include_bytes_aligned!(
         "../../target/bpfel-unknown-none/release/doctor"
     ))?;
-    if let Err(e) = BpfLogger::init(&mut bpf) {
+    if let Err(e) = EbpfLogger::init(&mut bpf) {
         // This can happen if you remove all log statements from your eBPF program.
         warn!("failed to initialize eBPF logger: {}", e);
     }
@@ -76,7 +76,7 @@ fn load_ebpf(opts: ProfileOptions) -> Result<Bpf, Error> {
         )?;
     } else {
         // attach to all
-        for cpu in online_cpus()? {
+        for cpu in online_cpus().map_err(|e| anyhow!("get online cpus failed {e:?}"))? {
             program.attach(
                 perf_event::PerfTypeId::Software,
                 perf_event::perf_sw_ids::PERF_COUNT_SW_CPU_CLOCK as u64,
@@ -112,7 +112,6 @@ async fn main() -> Result<(), anyhow::Error> {
         running.store(false, Ordering::SeqCst);
     });
 
-    
     let mut translator = Translator::new("/".into());
     while running_clone.load(Ordering::SeqCst) {
         match stacks.pop(0) {
