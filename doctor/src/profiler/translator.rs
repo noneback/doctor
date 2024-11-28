@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     fs::File,
     io::{self, BufRead, BufReader},
     path::PathBuf,
@@ -8,15 +8,16 @@ use std::{
 
 use anyhow::{anyhow, Error};
 use aya::maps::stack_trace::StackTrace;
-use blazesym::symbolize::Symbolizer;
 
-use super::{dso::Dso, perf_record::PerfStackFrame, process::ProcessMetadata};
+use super::{
+    error::TranslateError, perf_record::PerfStackFrame, process::ProcessMetadata,
+    symbolizer::symbolizer::Symbolizer,
+};
 
 pub struct Translator {
     rootfs: PathBuf,
     ksyms: Option<BTreeMap<u64, String>>,
     symbolizer: Arc<Symbolizer>,
-    dso_cache: BTreeMap<PathBuf, Dso>,
 }
 
 impl Translator {
@@ -24,8 +25,9 @@ impl Translator {
         Self {
             rootfs,
             ksyms: None,
-            symbolizer: Arc::new(Symbolizer::new()),
-            dso_cache: BTreeMap::new(),
+            symbolizer: Arc::new(
+                Symbolizer::new("/root/workspace/profiler/bianque/doctor/tests".into()).unwrap(),
+            ), // TODO:
         }
     }
 
@@ -48,8 +50,8 @@ impl Translator {
     ) -> Result<Vec<PerfStackFrame>, Error> {
         // for frame in record.stack_frames {}
         let ips = utrace.frames().iter().map(|f| f.ip).collect::<Vec<_>>();
-        self.translate_usyms_v2(pid, ips)
-            .map_err(|e: Error| anyhow!("translate_utrace pid {} -> {}", pid, e))
+        self.translate_usyms(pid, ips)
+            .map_err(|e| anyhow!("translate_utrace pid {} -> {}", pid, e))
     }
 
     pub fn translate_ksyms(&mut self, ip: u64) -> Result<PerfStackFrame, Error> {
@@ -72,88 +74,39 @@ impl Translator {
             return Ok(ksyms
                 .range(..=ip)
                 .next_back()
-                .map(|(_, s)| {
-                    PerfStackFrame::new(ip, format!("{}_[k]", s), elf_path, ip)
-                })
+                .map(|(_, s)| PerfStackFrame::new(ip, format!("{}_[k]", s), elf_path, ip))
                 .unwrap());
         }
         Err(anyhow::anyhow!("translate_ksyms 0x{} NotFound", ip))
-    }
-
-    pub fn translate_usyms_v2(
-        &mut self,
-        pid: u32,
-        ips: Vec<u64>,
-    ) -> Result<Vec<PerfStackFrame>, Error> {
-        let proc = ProcessMetadata::new(pid)?;
-        let mut frames = Vec::new();
-
-        for ip in ips {
-            if let Ok((dso_path, offset)) = proc.abs_addr(ip) {
-                let dso = self
-                    .dso_cache
-                    .entry(dso_path.clone())
-                    .or_insert_with(|| Dso::new(dso_path.clone()));
-
-                let sym = dso
-                    .translate_single(&self.symbolizer, offset)
-                    .map_err(|e| {
-                        anyhow!(
-                            "translate_usyms_v2, cmdline {:?}, pid {} -> {}",
-                            proc.cmdline,
-                            pid,
-                            e
-                        )
-                    })?;
-
-                if !sym.eq("unknown") {
-                    frames.push(PerfStackFrame::new(ip, sym, dso_path.clone(), offset));
-                }
-            }
-        }
-
-        Ok(frames)
     }
 
     pub fn translate_usyms(
         &mut self,
         pid: u32,
         ips: Vec<u64>,
-    ) -> Result<Vec<PerfStackFrame>, Error> {
+    ) -> Result<Vec<PerfStackFrame>, TranslateError> {
         let proc = ProcessMetadata::new(pid)?;
-        let mut dso_offsets: HashMap<PathBuf, Vec<(u64, u64)>> = HashMap::new();
+        let mut frames = Vec::new();
 
-        ips.iter().for_each(|&ip| {
-            if let Ok((dso, offset)) = proc.abs_addr(ip) {
-                dso_offsets.entry(dso).or_default().push((offset, ip));
+        for ip in ips {
+            if let Ok((dso_path, offset)) = proc.abs_addr(ip) {
+                let psf = match self.symbolizer.symbolize(&proc.rootfs, &dso_path, offset) {
+                    Ok(sym) => PerfStackFrame::new(
+                        ip,
+                        sym.name.unwrap_or("unknown".into()),
+                        dso_path,
+                        offset,
+                    ),
+                    Err(e) => {
+                        log::debug!("Symbolize {}, file {:#?}: {}", pid, &dso_path, e);
+                        PerfStackFrame::new(ip, "unknown".into(), dso_path.clone(), offset)
+                    }
+                };
+
+                frames.push(psf);
             }
-        });
+        }
 
-        let mut frames = dso_offsets
-            .iter()
-            .flat_map(|(path, mapping)| {
-                // use cache
-                let dso = self
-                    .dso_cache
-                    .entry(path.clone())
-                    .or_insert_with(|| Dso::new(path.clone()));
-
-                let offsets = mapping
-                    .iter()
-                    .map(|&(offset, _ip)| offset)
-                    .collect::<Vec<_>>();
-                let ips = mapping.iter().map(|(_offset, ip)| ip).collect::<Vec<_>>();
-
-                dso.translate(&self.symbolizer, &offsets)
-                    .unwrap()
-                    .into_iter()
-                    .zip(ips)
-                    .map(|(symbol, ip)| (ip, PerfStackFrame::new(*ip, symbol, path.clone(), 0)))
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-        frames.sort_by_key(|item| item.0);
-
-        Ok(frames.into_iter().map(|f| f.1).collect())
+        Ok(frames)
     }
 }

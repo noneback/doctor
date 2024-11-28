@@ -112,6 +112,7 @@ async fn main() -> Result<(), anyhow::Error> {
         running.store(false, Ordering::SeqCst);
     });
 
+    
     let mut translator = Translator::new("/".into());
     while running_clone.load(Ordering::SeqCst) {
         match stacks.pop(0) {
