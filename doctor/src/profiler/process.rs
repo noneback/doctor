@@ -46,8 +46,8 @@ impl ProcessMetadata {
         match &mapper.pathname {
             procfs::process::MMapPath::Path(p) => {
                 let path = match p.to_str().unwrap().strip_suffix(" (deleted)") {
-                    Some(striped) => self.rootfs.join(striped),
-                    None => self.rootfs.join(p),
+                    Some(striped) => PathBuf::from(striped),
+                    None => p.clone(),
                 };
 
                 Ok((path, mapper.offset + (v_addr - mapper.address.0)))

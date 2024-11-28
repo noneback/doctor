@@ -13,12 +13,16 @@ env_logger = "0.10"
 libc = "0.2"
 log = "0.4"
 tokio = { version = "1.25", features = ["macros", "rt", "rt-multi-thread", "net", "signal", "time"] }
-blazesym = "0.2.0-rc.0"
 thiserror = "1.0.63"
 procfs = "0.16.0"
 clap = "4.5.9"
 goblin = {version = "0.8.2", features = ["elf32","elf32"]}
-moka = { version = "0.12.8", features = ["future"] }
+moka = { version = "0.12.8", features = ["future","sync"] }
+sled = { version = "0.34.7" }
+gimli = "0.31.0"
+memmap2 = "0.9.4"
+wholesym = "0.7.0"
+symbolic = { version = "12.12.3", features = ["demangle"] }
 
 [[bin]]
 name = "doctor"
