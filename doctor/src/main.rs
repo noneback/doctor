@@ -1,109 +1,71 @@
-use aya_log::EbpfLogger;
+use anyhow::anyhow;
 use clap::Parser;
+use profiler::translator::{Translator};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{mpsc, Arc};
+use std::time::Instant;
+use utils::{deconstruct_stack, load_ebpf, ProfileOptions};
 
-use anyhow::{anyhow, Error};
-use aya::maps::{HashMap, MapData, Queue, StackTraceMap};
-use aya::programs::{perf_event, PerfEvent};
-use aya::util::online_cpus;
-use aya::{include_bytes_aligned, Ebpf};
+use aya::maps::{HashMap, RingBuf, StackTraceMap};
 use doctor_common::StackInfo;
-use log::{debug, info, warn};
-use profiler::perf_record::PerfRecord;
-
-use tokio::signal;
-
-use crate::profiler::translator::Translator;
+use log::info;
+use tokio::{signal, task};
 mod profiler;
+mod utils;
 
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-
-struct ProfileOptions {
-    #[arg(short, long)]
-    pid: Option<u32>,
-    #[arg(short, long, default_value = "5")]
-    duration: u32,
-    #[arg(short, long)]
-    frequency: Option<u32>,
-    #[arg(long)]
-    debug: Option<bool>,
-}
-
-fn load_ebpf(opts: ProfileOptions) -> Result<Ebpf, Error> {
-    // Bump the memlock rlimit. This is needed for older kernels that don't use the
-    // new memcg based accounting, see https://lwn.net/Articles/837122/
-    let rlim = libc::rlimit {
-        rlim_cur: libc::RLIM_INFINITY,
-        rlim_max: libc::RLIM_INFINITY,
-    };
-    let ret = unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &rlim) };
-    if ret != 0 {
-        debug!("remove limit on locked memory failed, ret is: {}", ret);
-    }
-
-    // This will include your eBPF object file as raw bytes at compile-time and load it at
-    // runtime. This approach is recommended for most real-world use cases. If you would
-    // like to specify the eBPF program at runtime rather than at compile-time, you can
-    // reach for `Bpf::load_file` instead.
-    #[cfg(debug_assertions)]
-    let mut bpf = Ebpf::load(include_bytes_aligned!(
-        "../../target/bpfel-unknown-none/debug/doctor"
-    ))?;
-    #[cfg(not(debug_assertions))]
-    let mut bpf = Bpf::load(include_bytes_aligned!(
-        "../../target/bpfel-unknown-none/release/doctor"
-    ))?;
-    if let Err(e) = EbpfLogger::init(&mut bpf) {
-        // This can happen if you remove all log statements from your eBPF program.
-        warn!("failed to initialize eBPF logger: {}", e);
-    }
-    // This will raise scheduled events on each CPU at 1 HZ, triggered by the kernel based
-    // on clock ticks.
-    let program: &mut PerfEvent = bpf.program_mut("doctor").unwrap().try_into()?;
-
-    program.load()?;
-
-    if let Some(pid) = opts.pid {
-        program.attach(
-            perf_event::PerfTypeId::Software,
-            perf_event::perf_sw_ids::PERF_COUNT_SW_CPU_CLOCK as u64,
-            perf_event::PerfEventScope::OneProcessAnyCpu { pid },
-            perf_event::SamplePolicy::Frequency(1000),
-            false,
-        )?;
-    } else {
-        // attach to all
-        for cpu in online_cpus().map_err(|e| anyhow!("get online cpus failed {e:?}"))? {
-            program.attach(
-                perf_event::PerfTypeId::Software,
-                perf_event::perf_sw_ids::PERF_COUNT_SW_CPU_CLOCK as u64,
-                perf_event::PerfEventScope::AllProcessesOneCpu { cpu }, // where put options
-                perf_event::SamplePolicy::Frequency(1000),
-                false,
-            )?;
-        }
-    }
-    Ok(bpf)
-}
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     env_logger::init();
-    // read cmdline opt
     let opts = ProfileOptions::parse();
+    let mut bpf = load_ebpf(&opts)?;
 
-    let mut bpf = load_ebpf(opts)?;
+    let mut tlor = Translator::new("/".into());
+
     const STACK_INFO_SIZE: usize = std::mem::size_of::<StackInfo>();
 
-    let mut stacks = Queue::<_, [u8; STACK_INFO_SIZE]>::try_from(bpf.take_map("STACKS").unwrap())?;
-    let _stack_count =
-        HashMap::<_, [u8; STACK_INFO_SIZE], u64>::try_from(bpf.take_map("counts").unwrap())
-            .unwrap();
-    let stack_traces = StackTraceMap::try_from(bpf.map("stack_traces").unwrap()).unwrap();
+    let stack_traces = StackTraceMap::try_from(
+        bpf.take_map("stack_traces")
+            .ok_or(anyhow!("stack_traces not found"))?,
+    )?;
 
-    info!("Waiting for Ctrl-C...");
+    let mut counts = HashMap::<_, [u8; STACK_INFO_SIZE], u64>::try_from(
+        bpf.take_map("counts").ok_or(anyhow!("counts not found"))?,
+    )?;
+
+    let mut trace_count = std::collections::HashMap::new();
+    let mut samples;
+    let mut queue_processed = 0;
+
+    let (perf_tx, perf_rx) = mpsc::channel();
+
+    task::spawn(async move {
+        let ring_buf = RingBuf::try_from(bpf.map_mut("RING_BUF_STACKS").unwrap()).unwrap();
+        use tokio::io::unix::AsyncFd;
+        let mut fd = AsyncFd::new(ring_buf).unwrap();
+
+        while let Ok(mut guard) = fd.readable_mut().await {
+            match guard.try_io(|inner| {
+                let ring_buf = inner.get_mut();
+                while let Some(item) = ring_buf.next() {
+                    // println!("Received: {:?}", item);
+                    let stack: StackInfo = unsafe { *item.as_ptr().cast() };
+                    // println!(
+                    //     "Stack {:?}, cmd: {}",
+                    //     stack,
+                    //     profile_bee::symbols::str_from_u8_nul_utf8(&stack.cmd).unwrap()
+                    // );
+                    let _ = perf_tx.send(stack);
+                }
+                Ok(())
+            }) {
+                Ok(_) => {
+                    guard.clear_ready();
+                    continue;
+                }
+                Err(_would_block) => continue,
+            }
+        }
+    });
     let running = Arc::new(AtomicBool::new(true));
 
     let running_clone = Arc::clone(&running);
@@ -112,47 +74,40 @@ async fn main() -> Result<(), anyhow::Error> {
         running.store(false, Ordering::SeqCst);
     });
 
-    let mut translator = Translator::new("/".into());
     while running_clone.load(Ordering::SeqCst) {
-        match stacks.pop(0) {
-            Ok(v) => {
-                let stack: StackInfo = unsafe { *v.as_ptr().cast() };
+        let started = Instant::now();
+        trace_count.clear();
+        samples = 0;
+        // clear "counts" hashmap
+        let keys = counts.keys().flatten().collect::<Vec<_>>();
+        for k in keys {
+            let _ = counts.remove(&k);
+        }
+        /* Perf mpsc RX loop */
+        while let Ok(stack) = perf_rx.recv() {
+            queue_processed += 1;
 
-                let record = deconstruct_stack(&stack, &stack_traces, &mut translator).unwrap();
+            // user space counting
+            let trace = trace_count.entry(stack).or_insert(0);
+            *trace += 1;
 
-                println!("{}", record);
-            }
-            _ => {
-                info!("Nothing");
-                tokio::time::sleep(Duration::from_millis(1000)).await;
+            if started.elapsed().as_secs() > opts.duration as _ {
+                break;
             }
         }
+        println!("Processed {} queue events", queue_processed);
+
+        println!("Processing stacks...");
+        for (key, value) in counts.iter().flatten() {
+            let stack: StackInfo = unsafe { *key.as_ptr().cast() };
+            samples += value;
+            let record = deconstruct_stack(&stack, &stack_traces, &mut tlor)?;
+            println!("{}", record);
+        }
+
+        println!("Total samples: {}", samples);
     }
 
     info!("Exiting... ");
-    handle.await?;
     Ok(())
-}
-
-fn deconstruct_stack(
-    stack: &StackInfo,
-    stack_traces: &StackTraceMap<&MapData>,
-    translator: &mut Translator,
-) -> Result<PerfRecord, Error> {
-    let mut kframes = None;
-    let mut uframes = None;
-
-    if let Some(id) = stack.kernel_stack_id {
-        kframes = stack_traces
-            .get(&(id as u32), 0)
-            .map(|trace| translator.translate_ktrace(&trace).ok())?;
-    }
-
-    if let Some(id) = stack.user_stack_id {
-        uframes = stack_traces
-            .get(&(id as u32), 0)
-            .map(|trace| translator.translate_utrace(stack.pid, &trace).ok())?;
-    }
-
-    Ok(PerfRecord::from(stack, kframes, uframes))
 }

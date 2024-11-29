@@ -11,11 +11,6 @@ pub struct StackInfo {
     pub cpu: u32,
 }
 
-/* Global configuration */
-#[no_mangle]
-static SKIP_IDLE: u8 = 0;
-
-pub unsafe fn skip_idle() -> bool {
-    let skip = core::ptr::read_volatile(&SKIP_IDLE); // TODO: why we need this?
-    skip > 0
-}
+pub static EVENT_TRACE_ALWAYS: u8 = 1;
+pub static EVENT_TRACE_NEW: u8 = 2;
+pub static EVENT_TRACE_NONE: u8 = 3;

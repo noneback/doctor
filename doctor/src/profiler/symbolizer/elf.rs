@@ -69,26 +69,6 @@ impl ElfMetadata {
 
         Ok((debug_info, pt_loads))
     }
-    pub fn load_sym_from_dwarf(path: &PathBuf) -> Result<BTreeSet<Symbol>, SymbolizerError> {
-        let mut debug_info = BTreeSet::new();
-        tokio::task::block_in_place(|| {
-            let symbol_manager = SymbolManager::with_config(SymbolManagerConfig::default());
-            let symbol_map_f = symbol_manager.load_symbol_map_for_binary_at_path(path, None);
-            let symbol_map = tokio::runtime::Handle::current()
-                .block_on(symbol_map_f)
-                .unwrap();
-
-            debug!("eso path: {:?}, build {}", &path, symbol_map.debug_id());
-            symbol_map.iter_symbols().for_each(|s| {
-                debug_info.insert(Symbol {
-                    addr: s.0 as u64,
-                    name: Some(s.1.to_string()),
-                });
-            });
-        });
-
-        Ok(debug_info)
-    }
 
     pub fn get_inode(path: &PathBuf) -> Result<u64, SymbolizerError> {
         let f_meta = metadata(path).map_err(SymbolizerError::GetInodeFailed)?;
