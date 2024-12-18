@@ -1,6 +1,6 @@
 use anyhow::anyhow;
 use clap::Parser;
-use profiler::translator::{Translator};
+use profiler::translator::Translator;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Instant;
@@ -17,7 +17,12 @@ mod utils;
 async fn main() -> Result<(), anyhow::Error> {
     env_logger::init();
     let opts = ProfileOptions::parse();
-    let mut bpf = load_ebpf(&opts)?;
+    let mut bpf = load_ebpf(&opts)
+        .map_err(|e| {
+            println!("{:?}", e);
+            e
+        })
+        .unwrap();
 
     let mut tlor = Translator::new("/".into());
 

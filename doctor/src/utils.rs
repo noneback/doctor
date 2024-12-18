@@ -3,11 +3,9 @@ use clap::Parser;
 
 use anyhow::Error;
 use aya::maps::{MapData, StackTraceMap};
-use aya::programs::{
-    KProbe, PerfEvent, PerfEventScope, PerfTypeId, SamplePolicy, TracePoint, UProbe,
-};
+use aya::programs::{PerfEvent, PerfEventScope, PerfTypeId, SamplePolicy};
 use aya::util::online_cpus;
-use aya::{include_bytes_aligned, Ebpf};
+use aya::{include_bytes_aligned, Btf, Ebpf, EbpfLoader};
 use doctor_common::StackInfo;
 use log::{debug, warn};
 
@@ -58,40 +56,28 @@ pub fn load_ebpf(opts: &ProfileOptions) -> Result<Ebpf, Error> {
     // runtime. This approach is recommended for most real-world use cases. If you would
     // like to specify the eBPF program at runtime rather than at compile-time, you can
     // reach for `Bpf::load_file` instead.
+    let skip_idle = if opts.skip_idle { 1u8 } else { 0u8 };
     #[cfg(debug_assertions)]
-    let mut ebpf = Ebpf::load(include_bytes_aligned!(
-        "../../target/bpfel-unknown-none/debug/doctor"
-    ))?;
+    let data = include_bytes_aligned!("../../target/bpfel-unknown-none/debug/doctor");
     #[cfg(not(debug_assertions))]
-    let mut bpf = Ebpf::load(include_bytes_aligned!(
-        "../../target/bpfel-unknown-none/release/doctor"
-    ))?;
+    let data = include_bytes_aligned!("../../target/bpfel-unknown-none/release/doctor");
+
+    #[cfg(debug_assertions)]
+    let mut ebpf = EbpfLoader::new()
+        .btf(Btf::from_sys_fs().ok().as_ref())
+        .load(data)
+        .map_err(|e| {
+            println!("{:?}", e);
+            e
+        })?;
+
     if let Err(e) = EbpfLogger::init(&mut ebpf) {
         // This can happen if you remove all log statements from your eBPF program.
         warn!("failed to initialize eBPF logger: {}", e);
     }
-    // This will raise scheduled events on each CPU at 1 HZ, triggered by the kernel based
-    // on clock ticks.
-    if let Some(kprobe) = &opts.kprobe {
-        let program: &mut KProbe = ebpf.program_mut("kprobe_profile").unwrap().try_into()?;
-        program.load()?;
-        program.attach(kprobe, 0)?;
-    } else if let Some(uprobe) = &opts.uprobe {
-        let program: &mut UProbe = ebpf.program_mut("uprobe_profile").unwrap().try_into()?;
-        program.load()?;
-        program.attach(Some(uprobe), 0, "libc", None)?;
-    } else if let Some(tracepoint) = &opts.tracepoint {
-        let program: &mut TracePoint =
-            ebpf.program_mut("tracepoint_profile").unwrap().try_into()?;
-        program.load()?;
 
-        let mut split = tracepoint.split(':');
-        let category = split.next().expect("category");
-        let name = split.next().expect("name");
-
-        program.attach(category, name)?;
-    } else {
-        let program: &mut PerfEvent = ebpf.program_mut("profile_cpu").unwrap().try_into()?;
+    {
+        let program: &mut PerfEvent = ebpf.program_mut("doctor").unwrap().try_into()?;
 
         program.load()?;
 
